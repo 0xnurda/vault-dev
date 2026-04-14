@@ -18,7 +18,13 @@ import {
   getAccount,
   TOKEN_PROGRAM_ID,
 } from "@solana/spl-token";
-import { Keypair, PublicKey, LAMPORTS_PER_SOL } from "@solana/web3.js";
+import {
+  Keypair,
+  PublicKey,
+  LAMPORTS_PER_SOL,
+  SystemProgram,
+  Transaction,
+} from "@solana/web3.js";
 import { assert } from "chai";
 import { SimpleVault } from "../target/types/simple_vault";
 
@@ -26,17 +32,22 @@ import { SimpleVault } from "../target/types/simple_vault";
 // Helpers
 // ─────────────────────────────────────────────────────────────────────────────
 
-async function airdropIfNeeded(
-  connection: anchor.web3.Connection,
+// Переводим SOL от admin → pubkey (обходит rate limit devnet airdrop)
+async function fundFromAdmin(
+  provider: anchor.AnchorProvider,
+  admin: Keypair,
   pubkey: PublicKey,
-  minLamports = 0.5 * LAMPORTS_PER_SOL
+  lamports = 0.3 * LAMPORTS_PER_SOL
 ) {
-  const balance = await connection.getBalance(pubkey);
-  if (balance < minLamports) {
-    const sig = await connection.requestAirdrop(pubkey, LAMPORTS_PER_SOL);
-    await connection.confirmTransaction(sig, "confirmed");
-    console.log(`  Airdrop → ${pubkey.toBase58().slice(0, 8)}... done`);
-  }
+  const tx = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: admin.publicKey,
+      toPubkey: pubkey,
+      lamports,
+    })
+  );
+  await provider.sendAndConfirm(tx, [admin]);
+  console.log(`  Funded → ${pubkey.toBase58().slice(0, 8)}... (${lamports / LAMPORTS_PER_SOL} SOL)`);
 }
 
 // Читаем баланс токен-аккаунта (возвращает число токенов)
@@ -89,10 +100,9 @@ describe("simple_vault", () => {
   before(async () => {
     console.log("\n=== Setup ===");
 
-    // Airdrop пользователям (нужен SOL для rent и комиссий)
-    await airdropIfNeeded(connection, admin.publicKey, LAMPORTS_PER_SOL);
-    await airdropIfNeeded(connection, userA.publicKey, LAMPORTS_PER_SOL);
-    await airdropIfNeeded(connection, userB.publicKey, LAMPORTS_PER_SOL);
+    // Финансируем пользователей переводом от admin (devnet airdrop имеет rate limit)
+    await fundFromAdmin(provider, admin, userA.publicKey);
+    await fundFromAdmin(provider, admin, userB.publicKey);
 
     // Создаём тестовый SPL-токен (admin = mint authority)
     tokenMint = await createMint(
