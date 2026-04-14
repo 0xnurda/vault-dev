@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "scripts": {
     "build": "anchor build",
-    "test": "anchor test --provider.cluster devnet",
+    "test": "anchor test --provider.cluster devnet --skip-local-validator --skip-deploy",
     "deploy": "anchor deploy --provider.cluster devnet"
   },
   "dependencies": {
