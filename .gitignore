@@ -1,0 +1,24 @@
+# Rust / Cargo
+target/
+
+# Node
+node_modules/
+yarn-error.log
+
+# Anchor
+.anchor/
+app/
+# Скомпилированный бинарник (большой, генерируется через anchor build)
+target/deploy/*.so
+
+# Ключи — НИКОГДА не коммитить!
+target/deploy/*-keypair.json
+**/*.keypair.json
+wallet.json
+id.json
+devnet-wallet.json
+
+# IDE
+.DS_Store
+.vscode/
+.idea/
