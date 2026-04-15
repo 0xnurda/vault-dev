@@ -148,6 +148,40 @@ pub fn handler<'a, 'b, 'c: 'info, 'info>(
         )
     };
 
+    // Raydium transfers tokens using payer (admin) as authority.
+    // Our vault accounts are owned by vault_state PDA → approve admin as delegate first.
+    let (my_token_max, wsol_max) = if pool_mint_0 == my_token_mint {
+        (amount_0_max, amount_1_max) // MyToken=token0, wSOL=token1
+    } else {
+        (amount_1_max, amount_0_max) // wSOL=token0, MyToken=token1
+    };
+
+    token_interface::approve(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Approve {
+                to: ctx.accounts.vault_token_account.to_account_info(),
+                delegate: ctx.accounts.admin.to_account_info(),
+                authority: ctx.accounts.vault_state.to_account_info(),
+            },
+            &[&[b"vault", token_mint_key.as_ref(), &[bump]]],
+        ),
+        my_token_max,
+    )?;
+
+    token_interface::approve(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Approve {
+                to: ctx.accounts.vault_wsol_account.to_account_info(),
+                delegate: ctx.accounts.admin.to_account_info(),
+                authority: ctx.accounts.vault_state.to_account_info(),
+            },
+            &[&[b"vault", token_mint_key.as_ref(), &[bump]]],
+        ),
+        wsol_max,
+    )?;
+
     let remaining = ctx.remaining_accounts.to_vec();
 
     let cpi_accounts = cpi::accounts::OpenPositionWithToken22Nft {
@@ -191,6 +225,29 @@ pub fn handler<'a, 'b, 'c: 'info, 'info>(
         amount_1_max,
         true,        // with_metadata
         Some(false), // base_flag: использовать amount_1 как базу
+    )?;
+
+    // Revoke delegation after CPI
+    token_interface::revoke(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Revoke {
+                source: ctx.accounts.vault_token_account.to_account_info(),
+                authority: ctx.accounts.vault_state.to_account_info(),
+            },
+            &[&[b"vault", token_mint_key.as_ref(), &[bump]]],
+        ),
+    )?;
+
+    token_interface::revoke(
+        CpiContext::new_with_signer(
+            ctx.accounts.token_program.to_account_info(),
+            Revoke {
+                source: ctx.accounts.vault_wsol_account.to_account_info(),
+                authority: ctx.accounts.vault_state.to_account_info(),
+            },
+            &[&[b"vault", token_mint_key.as_ref(), &[bump]]],
+        ),
     )?;
 
     msg!(
