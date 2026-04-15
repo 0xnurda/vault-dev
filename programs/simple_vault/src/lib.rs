@@ -1,6 +1,9 @@
 use anchor_lang::prelude::*;
 use anchor_spl::token::{self, Burn, Mint, MintTo, Token, TokenAccount, Transfer};
 
+pub mod instructions;
+use instructions::*;
+
 declare_id!("EbojNUfh9Jk6dyZaaQAJWofbdnkvdxfQbeAPq6iWoHAu");
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -152,6 +155,31 @@ pub mod simple_vault {
             shares_amount, tokens_out, vault.total_tokens, vault.total_shares
         );
         Ok(())
+    }
+
+    /// Открыть позицию в Raydium CLMM через CPI.
+    /// Vault PDA = владелец NFT позиции.
+    /// Токены берутся из vault_token_account (MyToken) + vault_wsol_account (wSOL).
+    pub fn open_raydium_position<'a, 'b, 'c: 'info, 'info>(
+        ctx: Context<'a, 'b, 'c, 'info, OpenRaydiumPosition<'info>>,
+        tick_lower_index: i32,
+        tick_upper_index: i32,
+        tick_array_lower_start_index: i32,
+        tick_array_upper_start_index: i32,
+        liquidity: u128,
+        amount_0_max: u64,
+        amount_1_max: u64,
+    ) -> Result<()> {
+        instructions::open_position::handler(
+            ctx,
+            tick_lower_index,
+            tick_upper_index,
+            tick_array_lower_start_index,
+            tick_array_upper_start_index,
+            liquidity,
+            amount_0_max,
+            amount_1_max,
+        )
     }
 }
 
@@ -340,4 +368,8 @@ pub enum VaultError {
     VaultEmpty,
     #[msg("Math overflow")]
     MathOverflow,
+    #[msg("Unauthorized: only admin can call this")]
+    Unauthorized,
+    #[msg("tick_lower must be less than tick_upper")]
+    InvalidTickRange,
 }
