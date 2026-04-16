@@ -171,7 +171,9 @@ async function main() {
 
   // ─── Рассчитываем ликвидность ─────────────────────────────────────────────
   const myTokenIsA = poolInfo.mintA.address === MY_TOKEN_MINT.toBase58();
-  const baseAmount = myTokenIsA ? TOKEN_AMOUNT_RAW : SOL_AMOUNT_LAMPORTS;
+  // Always use MyToken amount as base so SDK computes the wSOL counterpart.
+  // inputA=true means "MyToken is mintA", inputA=false means "MyToken is mintB".
+  const baseAmount = TOKEN_AMOUNT_RAW;
 
   const epochInfo = await connection.getEpochInfo();
 
@@ -179,7 +181,7 @@ async function main() {
     await PoolUtils.getLiquidityAmountOutFromAmountIn({
       poolInfo,
       slippage: 0.01,
-      inputA: myTokenIsA,
+      inputA: myTokenIsA, // true → base is mintA (MyToken), false → base is mintB (MyToken)
       tickUpper: Math.max(tickLower, tickUpper),
       tickLower: Math.min(tickLower, tickUpper),
       amount: new BN(baseAmount),
@@ -237,8 +239,10 @@ async function main() {
   // ─── Пополнить vault_token_account MyToken с кошелька ───────────────────
   const vaultTokenBalance = await connection.getTokenAccountBalance(vaultTokenAccountPDA).catch(() => null);
   const vaultTokenAmount = vaultTokenBalance ? Number(vaultTokenBalance.value.amount) : 0;
-  if (vaultTokenAmount < TOKEN_AMOUNT_RAW) {
-    console.log(`\n  Переводим MyToken кошелёк → vault_token_account...`);
+  const myTokenNeeded = amount1Max + TOKEN_AMOUNT_RAW; // ensure enough for position + buffer
+  if (vaultTokenAmount < myTokenNeeded) {
+    const toTransfer = myTokenNeeded - vaultTokenAmount;
+    console.log(`\n  Переводим MyToken кошелёк → vault_token_account (${toTransfer / 1e6} MyToken)...`);
     const { transfer, getAssociatedTokenAddress: getAta } = await import("@solana/spl-token");
     const walletTokenAta = await getAta(MY_TOKEN_MINT, wallet.publicKey);
     await transfer(
@@ -247,20 +251,22 @@ async function main() {
       walletTokenAta,        // откуда (кошелёк)
       vaultTokenAccountPDA,  // куда (vault PDA token account)
       wallet.publicKey,      // authority
-      TOKEN_AMOUNT_RAW * 2
+      toTransfer
     );
-    console.log(`  ✓ Переведено ${TOKEN_AMOUNT_RAW * 2 / 1e6} MyToken в vault`);
+    console.log(`  ✓ Переведено ${toTransfer / 1e6} MyToken в vault`);
   } else {
     console.log(`\n  Vault уже имеет ${vaultTokenAmount / 1e6} MyToken`);
   }
 
   // ─── Создаём / пополняем vault wSOL account ──────────────────────────────
   console.log("\n=== Подготовка vault wSOL account ===");
+  // Fund with computed wSOL amount + 0.02 SOL buffer
+  const wsolNeeded = amount0Max + 20_000_000; // +0.02 SOL buffer
   const vaultWsolAccount = await createOrFundWsolAccount(
     connection,
     wallet,
     vaultStatePDA,   // owner = vault PDA
-    SOL_AMOUNT_LAMPORTS + 10_000_000 // +0.01 SOL буфер для rent/fees
+    wsolNeeded
   );
 
   // ─── Получаем Raydium аккаунты из poolKeys ───────────────────────────────

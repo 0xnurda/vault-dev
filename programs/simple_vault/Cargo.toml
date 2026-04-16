@@ -17,7 +17,7 @@ idl-build = ["anchor-lang/idl-build", "anchor-spl/idl-build"]
 
 [dependencies]
 anchor-lang = { version = "0.31.1", features = ["init-if-needed"] }
-anchor-spl = "0.31.1"
+anchor-spl = { version = "0.31.1", features = ["memo"] }
 raydium-clmm-cpi = { git = "https://github.com/raydium-io/raydium-cpi", branch = "anchor-0.31.1", package = "raydium-clmm-cpi", features = ["devnet"] }
 # Pin versions to avoid incompatibility with Solana platform-tools rustc 1.79
 blake3 = "=1.5.5"

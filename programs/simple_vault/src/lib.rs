@@ -157,6 +157,16 @@ pub mod simple_vault {
         Ok(())
     }
 
+    /// Закрыть позицию в Raydium CLMM через CPI.
+    /// Выводит всю ликвидность обратно в vault, сжигает position NFT.
+    pub fn close_raydium_position<'a, 'b, 'c: 'info, 'info>(
+        ctx: Context<'a, 'b, 'c, 'info, CloseRaydiumPosition<'info>>,
+        amount_0_min: u64,
+        amount_1_min: u64,
+    ) -> Result<()> {
+        instructions::close_position::handler(ctx, amount_0_min, amount_1_min)
+    }
+
     /// Открыть позицию в Raydium CLMM через CPI.
     /// Vault PDA = владелец NFT позиции.
     /// Токены берутся из vault_token_account (MyToken) + vault_wsol_account (wSOL).
