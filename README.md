@@ -1,28 +1,47 @@
 # Simple Vault — практика Anchor
 
-Минимальный SPL-токен vault на Anchor 0.31.1.  
-Три инструкции: `initialize_vault` → `deposit` → `withdraw`.
+Учебный контракт на Anchor 0.31.1 (Solana). Сейчас он делает две вещи:
+
+1. **Vault создан** — админ создаёт vault для SPL-токена.
+2. **У каждого пользователя своя «карточка»** — пользователь создаёт личный аккаунт (PDA) внутри vault.
+
+Контракт будет дорабатываться (депозиты, вывод и т.д.), поэтому сейчас он намеренно минимальный.
 
 ---
 
 ## Что делает контракт
 
 ```
-initialize_vault   создаёт VaultState PDA, vault token account, share mint
-deposit(amount)    переводит токены в vault → минтит shares пользователю
-withdraw(shares)   сжигает shares → возвращает токены пользователю
+initialize_vault    создаёт VaultState PDA, vault token account и share mint
+create_user_card    создаёт UserCard PDA — личную карточку пользователя в vault
 ```
 
-**Формула shares:**
-```
-Первый депозит:       shares = amount          (1:1)
-Последующие:          shares = amount × total_shares / total_tokens
-Вывод:                tokens = shares × total_tokens / total_shares
-```
+### `initialize_vault`
+
+Вызывает админ (платит за аккаунты). Создаёт три аккаунта для выбранного `token_mint`:
+
+| Аккаунт | Seeds | Что хранит |
+|---|---|---|
+| `vault_state` | `["vault", token_mint]` | admin, token_mint, адреса token account и share mint, bump |
+| `vault_token_account` | `["vault_tokens", token_mint]` | токен-аккаунт, владелец — vault PDA |
+| `share_mint` | `["share_mint", token_mint]` | mint для shares (6 decimals), authority — vault PDA |
+
+### `create_user_card`
+
+Вызывает любой пользователь (платит за свою карточку). Создаёт `UserCard`:
+
+| Поле | Описание |
+|---|---|
+| `vault` | к какому vault относится карточка |
+| `owner` | владелец карточки |
+| `bump` | bump PDA |
+
+Seeds: `["user_card", vault_state, user]` — поэтому у одного пользователя в одном vault
+может быть **только одна** карточка. Повторный вызов завершится ошибкой.
 
 ---
 
-## Предварительные требования
+## Требования
 
 | Инструмент | Версия | Установка |
 |---|---|---|
@@ -31,6 +50,9 @@ withdraw(shares)   сжигает shares → возвращает токены �
 | Anchor CLI | 0.31.1 | `cargo install --git https://github.com/coral-xyz/anchor avm --locked && avm install 0.31.1 && avm use 0.31.1` |
 | Node.js | 18+ | https://nodejs.org |
 | Yarn | any | `npm i -g yarn` |
+
+Rust-зависимости (`anchor-lang`, `anchor-spl` 0.31.1) подтянутся сами при `anchor build`.
+JS-зависимости (`@coral-xyz/anchor`, `@solana/web3.js`, `@solana/spl-token`, `mocha`, `chai`, `typescript`) — через `yarn install`.
 
 ---
 
@@ -49,51 +71,55 @@ yarn install
 anchor build
 ```
 
-Артефакты появятся в `target/deploy/`:
-- `simple_vault.so` — скомпилированная программа
-- `simple_vault-keypair.json` — keypair программы
-
-### 3. Получить Program ID
+Если билдишь **первый раз** (новый keypair):
 
 ```bash
-anchor keys list
-# simple_vault: EbojNUfh9Jk6dyZaaQAJWofbdnkvdxfQbeAPq6iWoHAu
+anchor keys sync   # обновит declare_id! в lib.rs и Anchor.toml
+anchor build       # пересобрать с правильным ID
 ```
 
-Если создаёшь **с нуля** (новый keypair):
-```bash
-# после первого anchor build:
-anchor keys sync    # обновит declare_id! в lib.rs и Anchor.toml автоматически
-anchor build        # пересобрать с новым ID
-```
+Артефакты в `target/deploy/`:
+- `simple_vault.so` — программа
+- `simple_vault-keypair.json` — keypair (не коммитить!)
 
-### 4. Получить devnet SOL
+### 3. Настроить Solana CLI на devnet
 
 ```bash
 solana config set --url devnet
-solana address                  # покажет твой адрес
-solana airdrop 2                # или через https://faucet.solana.com
+solana address     # твой публичный ключ — запомни его
 solana balance
 ```
 
-> Для деплоя нужно **~2.5 SOL** на devnet.
+### 4. Пополнить кошелёк
 
-### 5. Задеплоить на devnet
+Для деплоя нужно ~2 SOL.
+
+```bash
+solana airdrop 2   # может не сработать из-за rate limit
+```
+
+Если rate limit — используй faucet:
+- https://faucet.solana.com (вставь свой адрес)
+
+### 5. Задеплоить
 
 ```bash
 anchor deploy --provider.cluster devnet
 ```
 
-Успешный вывод:
-```
-Program Id: EbojNUfh9Jk6dyZaaQAJWofbdnkvdxfQbeAPq6iWoHAu
-Deploy success
-```
-
 ### 6. Запустить тесты
 
 ```bash
-anchor test --provider.cluster devnet --skip-local-validator
+yarn test
+```
+
+Ожидаемый вывод:
+
+```
+✔ initialize_vault: vault создан
+✔ create_user_card: у каждого пользователя своя карточка
+✔ create_user_card: вторая карточка для того же пользователя — ошибка
+3 passing
 ```
 
 ---
@@ -102,59 +128,27 @@ anchor test --provider.cluster devnet --skip-local-validator
 
 ```
 vault-simple/
-├── Anchor.toml                  # конфиг: cluster=devnet, program ID
-├── Cargo.toml                   # workspace
-├── package.json
-├── tsconfig.json
-├── programs/
-│   └── simple_vault/
-│       ├── Cargo.toml
-│       └── src/
-│           └── lib.rs           # весь контракт (инструкции + аккаунты + ошибки)
-└── tests/
-    └── vault.ts                 # TypeScript тесты (два пользователя)
+├── programs/simple_vault/src/lib.rs   # контракт
+├── tests/vault.ts                     # тесты
+├── Anchor.toml
+├── Cargo.toml
+└── package.json
 ```
 
 ---
 
-## Тест-сценарий
+## Частые ошибки
 
-Тесты (`tests/vault.ts`) покрывают:
-
-1. **initialize_vault** — vault создан, `total_tokens=0`, `total_shares=0`
-2. **UserA deposit 100** — получает 100 shares (1:1, первый депозит)
-3. **UserB deposit 50** — получает 50 shares, соотношение A/B = 66.7%/33.3%
-4. **UserA withdraw 50 shares** — получает 50 токенов обратно
-5. **Итог** — UserA и UserB по 50 shares (50%/50%), on-chain баланс совпадает с vault state
+| Ошибка | Причина | Решение |
+|---|---|---|
+| `Insufficient funds` при деплое | мало SOL | пополни кошелёк на devnet |
+| `AccountNotInitialized` в тестах | программа не задеплоена или другой ID | `anchor keys sync` → `anchor build` → `anchor deploy` |
+| `already in use` при `create_user_card` | у пользователя уже есть карточка | это ожидаемо, карточка одна на пользователя |
 
 ---
 
-## PDAs (Seeds)
+## Задания для практики
 
-| PDA | Seeds |
-|---|---|
-| `vault_state` | `["vault", token_mint]` |
-| `vault_token_account` | `["vault_tokens", token_mint]` |
-| `share_mint` | `["share_mint", token_mint]` |
-
----
-
-## Возможные ошибки
-
-| Ошибка | Причина |
-|---|---|
-| `insufficient funds` при деплое | Нужно больше SOL → `solana airdrop` или https://faucet.solana.com |
-| `AccountNotInitialized` в тестах | Забыл задеплоить или указан неверный cluster |
-| `ZeroAmount` | Передан `amount = 0` |
-| `SharesTooSmall` | Депозит слишком мал относительно TVL vault |
-
----
-
-## Задание для практики
-
-Реализовать самостоятельно или изменить:
-
-- [ ] Добавить **комиссию 1%** при депозите (переводить на `fee_wallet`)
-- [ ] Добавить **паузу** (`is_paused: bool`) — admin может остановить депозиты
-- [ ] Добавить **минимальный депозит** (например, ≥ 1 токен)
-- [ ] Написать тест: **три пользователя** делают deposit → все выводят → vault пуст
+1. Добавить в `UserCard` поле `created_at` (`Clock::get()?.unix_timestamp`).
+2. Добавить инструкцию `close_user_card`, которая закрывает карточку и возвращает ренту владельцу.
+3. Запретить создание карточек, если vault поставлен админом на паузу (флаг `paused` в `VaultState`).
