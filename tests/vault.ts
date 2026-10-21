@@ -5,11 +5,13 @@
  *   1. Admin создаёт vault (initialize_vault)
  *   2. Пользователи A и B создают свои карточки (create_user_card)
  *   3. Повторное создание карточки A падает
+ *   4. A вносит 100 токенов → 100 shares, B вносит 50 → 50 shares
+ *   5. Депозит без карточки и депозит 0 — ошибки
  */
 
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { createMint } from "@solana/spl-token";
+import { createMint, createAccount, mintTo, getAccount } from "@solana/spl-token";
 import {
   Keypair,
   PublicKey,
@@ -47,6 +49,27 @@ describe("simple_vault", () => {
   let vaultTokenAccountPDA: PublicKey;
   let shareMintPDA: PublicKey;
 
+  // Токен-аккаунты (токен vault) и share-аккаунты пользователей
+  const userC = Keypair.generate(); // без карточки
+  const tokenAcc: Record<string, PublicKey> = {};
+  const shareAcc: Record<string, PublicKey> = {};
+  const UNIT = 1_000_000; // decimals = 6
+
+  const deposit = (user: Keypair, amount: number) =>
+    program.methods
+      .deposit(new anchor.BN(amount))
+      .accounts({
+        vaultState: vaultStatePDA,
+        userCard: cardPda(user.publicKey),
+        vaultTokenAccount: vaultTokenAccountPDA,
+        shareMint: shareMintPDA,
+        userTokenAccount: tokenAcc[user.publicKey.toBase58()],
+        userShareAccount: shareAcc[user.publicKey.toBase58()],
+        user: user.publicKey,
+      } as any)
+      .signers([user])
+      .rpc();
+
   const cardPda = (user: PublicKey) =>
     PublicKey.findProgramAddressSync(
       [Buffer.from("user_card"), vaultStatePDA.toBuffer(), user.toBuffer()],
@@ -56,6 +79,7 @@ describe("simple_vault", () => {
   before(async () => {
     await fundFromAdmin(provider, admin, userA.publicKey);
     await fundFromAdmin(provider, admin, userB.publicKey);
+    await fundFromAdmin(provider, admin, userC.publicKey);
 
     tokenMint = await createMint(provider.connection, admin, admin.publicKey, null, 6);
 
@@ -123,5 +147,58 @@ describe("simple_vault", () => {
       failed = true;
     }
     assert.isTrue(failed, "повторная карточка должна быть отклонена");
+  });
+
+  it("deposit: A вносит 100 токенов → получает 100 shares", async () => {
+    // Токен-аккаунты пользователей и стартовые токены
+    for (const user of [userA, userB, userC]) {
+      const key = user.publicKey.toBase58();
+      tokenAcc[key] = await createAccount(provider.connection, admin, tokenMint, user.publicKey);
+      shareAcc[key] = await createAccount(provider.connection, admin, shareMintPDA, user.publicKey);
+      await mintTo(provider.connection, admin, tokenMint, tokenAcc[key], admin, 1000 * UNIT);
+    }
+
+    await deposit(userA, 100 * UNIT);
+
+    const shares = await getAccount(provider.connection, shareAcc[userA.publicKey.toBase58()]);
+    assert.equal(shares.amount, BigInt(100 * UNIT));
+
+    const card = await program.account.userCard.fetch(cardPda(userA.publicKey));
+    assert.equal(card.deposited.toNumber(), 100 * UNIT);
+    assert.equal(card.shares.toNumber(), 100 * UNIT);
+  });
+
+  it("deposit: B вносит 50 токенов → получает 50 shares", async () => {
+    await deposit(userB, 50 * UNIT);
+
+    const shares = await getAccount(provider.connection, shareAcc[userB.publicKey.toBase58()]);
+    assert.equal(shares.amount, BigInt(50 * UNIT));
+
+    const vault = await program.account.vaultState.fetch(vaultStatePDA);
+    assert.equal(vault.totalTokens.toNumber(), 150 * UNIT);
+    assert.equal(vault.totalShares.toNumber(), 150 * UNIT);
+
+    const vaultTokens = await getAccount(provider.connection, vaultTokenAccountPDA);
+    assert.equal(vaultTokens.amount, BigInt(150 * UNIT));
+  });
+
+  it("deposit: без карточки — ошибка", async () => {
+    let failed = false;
+    try {
+      await deposit(userC, 10 * UNIT);
+    } catch {
+      failed = true;
+    }
+    assert.isTrue(failed, "депозит без карточки должен быть отклонён");
+  });
+
+  it("deposit: сумма 0 — ошибка", async () => {
+    let failed = false;
+    try {
+      await deposit(userA, 0);
+    } catch {
+      failed = true;
+    }
+    assert.isTrue(failed, "нулевой депозит должен быть отклонён");
   });
 });

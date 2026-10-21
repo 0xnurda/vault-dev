@@ -1,11 +1,12 @@
 # Simple Vault — практика Anchor
 
-Учебный контракт на Anchor 0.31.1 (Solana). Сейчас он делает две вещи:
+Учебный контракт на Anchor 0.31.1 (Solana). Сейчас он делает три вещи:
 
-1. **Vault создан** — админ создаёт vault для SPL-токена.
-2. **У каждого пользователя своя «карточка»** — пользователь создаёт личный аккаунт (PDA) внутри vault.
+1. **Vault создан** — админ создаёт vault для SPL-токена. *(неделя 8)*
+2. **У каждого пользователя своя «карточка»** — личный аккаунт (PDA) внутри vault. *(неделя 8)*
+3. **Депозит и share-токены** — пользователь вносит токены и получает share-токены. *(неделя 9)*
 
-Контракт будет дорабатываться (депозиты, вывод и т.д.), поэтому сейчас он намеренно минимальный.
+Контракт будет дорабатываться (вывод, Raydium и т.д.), поэтому он намеренно небольшой.
 
 ---
 
@@ -14,6 +15,7 @@
 ```
 initialize_vault    создаёт VaultState PDA, vault token account и share mint
 create_user_card    создаёт UserCard PDA — личную карточку пользователя в vault
+deposit(amount)     переводит токены пользователя в vault → печатает ему shares
 ```
 
 ### `initialize_vault`
@@ -22,7 +24,7 @@ create_user_card    создаёт UserCard PDA — личную карточк�
 
 | Аккаунт | Seeds | Что хранит |
 |---|---|---|
-| `vault_state` | `["vault", token_mint]` | admin, token_mint, адреса token account и share mint, bump |
+| `vault_state` | `["vault", token_mint]` | admin, token_mint, адреса token account и share mint, `total_tokens`, `total_shares`, bump |
 | `vault_token_account` | `["vault_tokens", token_mint]` | токен-аккаунт, владелец — vault PDA |
 | `share_mint` | `["share_mint", token_mint]` | mint для shares (6 decimals), authority — vault PDA |
 
@@ -34,10 +36,39 @@ create_user_card    создаёт UserCard PDA — личную карточк�
 |---|---|
 | `vault` | к какому vault относится карточка |
 | `owner` | владелец карточки |
+| `deposited` | сколько токенов пользователь внёс всего |
+| `shares` | сколько share-токенов он получил |
 | `bump` | bump PDA |
 
 Seeds: `["user_card", vault_state, user]` — поэтому у одного пользователя в одном vault
 может быть **только одна** карточка. Повторный вызов завершится ошибкой.
+
+### `deposit(amount)`
+
+Пользователь вносит `amount` токенов и получает share-токены — «квитанции» с его долей в vault.
+**Депозит возможен только после `create_user_card`** — без карточки инструкция вернёт ошибку.
+
+Что происходит по шагам:
+
+1. Считается, сколько shares положено пользователю.
+2. Токены переводятся с токен-аккаунта пользователя в `vault_token_account`.
+3. Vault печатает shares на share-аккаунт пользователя (подписывает сам vault PDA).
+4. Обновляются `total_tokens` и `total_shares` в vault, а также `deposited` и `shares` в карточке.
+
+**Формула shares:**
+
+```
+Первый депозит:       shares = amount                         (1:1)
+Последующие депозиты: shares = amount × total_shares / total_tokens
+```
+
+Пример: A вносит 100 токенов → получает 100 shares. Потом B вносит 50 → получает 50 shares.
+В vault 150 токенов и 150 shares, у A доля 2/3, у B — 1/3.
+
+Ошибки: `ZeroAmount` (сумма 0), `SharesTooSmall` (депозит слишком мал, shares вышло бы 0), `MathOverflow`.
+
+Для вызова `deposit` нужны: токен-аккаунт пользователя (с токенами vault) и share-аккаунт пользователя
+(для share mint). В тестах они создаются через `createAccount` из `@solana/spl-token`.
 
 ---
 
@@ -119,7 +150,11 @@ yarn test
 ✔ initialize_vault: vault создан
 ✔ create_user_card: у каждого пользователя своя карточка
 ✔ create_user_card: вторая карточка для того же пользователя — ошибка
-3 passing
+✔ deposit: A вносит 100 токенов → получает 100 shares
+✔ deposit: B вносит 50 токенов → получает 50 shares
+✔ deposit: без карточки — ошибка
+✔ deposit: сумма 0 — ошибка
+7 passing
 ```
 
 ---
@@ -144,11 +179,16 @@ vault-simple/
 | `Insufficient funds` при деплое | мало SOL | пополни кошелёк на devnet |
 | `AccountNotInitialized` в тестах | программа не задеплоена или другой ID | `anchor keys sync` → `anchor build` → `anchor deploy` |
 | `already in use` при `create_user_card` | у пользователя уже есть карточка | это ожидаемо, карточка одна на пользователя |
+| `AccountNotInitialized` (`user_card`) при `deposit` | нет карточки | сначала вызови `create_user_card` |
+| `ZeroAmount` | `amount = 0` | вноси сумму больше нуля |
+| `SharesTooSmall` | депозит слишком мал относительно vault | увеличь сумму |
+| `429 Too Many Requests` | лимит публичного devnet RPC | подожди или возьми свой RPC |
 
 ---
 
 ## Задания для практики
 
-1. Добавить в `UserCard` поле `created_at` (`Clock::get()?.unix_timestamp`).
-2. Добавить инструкцию `close_user_card`, которая закрывает карточку и возвращает ренту владельцу.
-3. Запретить создание карточек, если vault поставлен админом на паузу (флаг `paused` в `VaultState`).
+1. Добавить комиссию 1% на депозит и отправлять её на `fee_wallet`.
+2. Добавить минимальный депозит (например, 1 токен).
+3. Добавить флаг `paused` в `VaultState`: админ может остановить депозиты.
+4. Написать тест: трое пользователей вносят разные суммы, проверить доли по shares.
