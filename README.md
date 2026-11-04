@@ -1,12 +1,13 @@
 # Simple Vault — практика Anchor
 
-Учебный контракт на Anchor 0.31.1 (Solana). Сейчас он делает три вещи:
+Учебный контракт на Anchor 0.31.1 (Solana). Сейчас он делает четыре вещи:
 
 1. **Vault создан** — админ создаёт vault для SPL-токена. *(неделя 8)*
 2. **У каждого пользователя своя «карточка»** — личный аккаунт (PDA) внутри vault. *(неделя 8)*
 3. **Депозит и share-токены** — пользователь вносит токены и получает share-токены. *(неделя 9)*
+4. **CPI и вывод** — пользователь возвращает share-токены и забирает свои токены. *(неделя 10)*
 
-Контракт будет дорабатываться (вывод, Raydium и т.д.), поэтому он намеренно небольшой.
+Контракт будет дорабатываться (Raydium и т.д.), поэтому он намеренно небольшой.
 
 ---
 
@@ -16,6 +17,7 @@
 initialize_vault    создаёт VaultState PDA, vault token account и share mint
 create_user_card    создаёт UserCard PDA — личную карточку пользователя в vault
 deposit(amount)     переводит токены пользователя в vault → печатает ему shares
+withdraw(shares)    сжигает shares пользователя → отправляет ему токены из vault
 ```
 
 ### `initialize_vault`
@@ -36,8 +38,8 @@ deposit(amount)     переводит токены пользователя в 
 |---|---|
 | `vault` | к какому vault относится карточка |
 | `owner` | владелец карточки |
-| `deposited` | сколько токенов пользователь внёс всего |
-| `shares` | сколько share-токенов он получил |
+| `deposited` | сколько токенов пользователь сейчас держит в vault (растёт при депозите, уменьшается при выводе) |
+| `shares` | сколько share-токенов он получил и ещё не вернул |
 | `bump` | bump PDA |
 
 Seeds: `["user_card", vault_state, user]` — поэтому у одного пользователя в одном vault
@@ -67,7 +69,34 @@ Seeds: `["user_card", vault_state, user]` — поэтому у одного п�
 
 Ошибки: `ZeroAmount` (сумма 0), `SharesTooSmall` (депозит слишком мал, shares вышло бы 0), `MathOverflow`.
 
-Для вызова `deposit` нужны: токен-аккаунт пользователя (с токенами vault) и share-аккаунт пользователя
+### `withdraw(shares_amount)`
+
+Обратная операция: пользователь возвращает `shares_amount` share-токенов и забирает свои токены.
+Как и депозит, вывод работает только с карточкой.
+
+**Формула:** `tokens = shares × total_tokens / total_shares`
+
+Что происходит по шагам:
+
+1. Считается, сколько токенов положено за эти shares.
+2. **CPI в Token program (`burn`)** — shares пользователя сжигаются. Подписывает сам пользователь.
+3. **CPI в Token program (`transfer`)** — токены уходят из `vault_token_account` пользователю.
+   Подписывает **vault PDA**: у него нет приватного ключа, программа подписывает за него
+   с помощью seeds (`invoke_signed`, в Anchor — `CpiContext::new_with_signer`).
+4. Обновляются `total_tokens` и `total_shares` в vault и поля карточки.
+
+Пример: в vault 150 токенов и 150 shares. A возвращает 50 shares → получает 50 токенов.
+В vault остаётся 100 токенов и 100 shares.
+
+> **Что такое CPI.** Cross-Program Invocation — один контракт вызывает другой.
+> В `deposit` и `withdraw` наш контракт вызывает Token program (`transfer`, `mint_to`, `burn`).
+> Когда нужна подпись PDA, вызов делается «с подписью» через seeds — это и есть главная идея недели 10.
+
+Ошибки: `ZeroAmount` (0 shares), `VaultEmpty` (в vault нет shares), `WithdrawTooSmall`
+(за такие shares вышло бы 0 токенов), `MathOverflow`. Если shares у пользователя меньше,
+чем он хочет вернуть, упадёт сам `burn` (Token program).
+
+Для вызова `deposit` и `withdraw` нужны: токен-аккаунт пользователя (с токенами vault) и share-аккаунт пользователя
 (для share mint). В тестах они создаются через `createAccount` из `@solana/spl-token`.
 
 ---
@@ -154,7 +183,12 @@ yarn test
 ✔ deposit: B вносит 50 токенов → получает 50 shares
 ✔ deposit: без карточки — ошибка
 ✔ deposit: сумма 0 — ошибка
-7 passing
+✔ withdraw: A возвращает 50 shares → получает 50 токенов
+✔ withdraw: B выводит всё → shares сожжены, токены возвращены
+✔ withdraw: сумма 0 — ошибка
+✔ withdraw: больше своих shares — ошибка
+✔ withdraw: без карточки — ошибка
+12 passing
 ```
 
 ---
@@ -180,7 +214,9 @@ vault-simple/
 | `AccountNotInitialized` в тестах | программа не задеплоена или другой ID | `anchor keys sync` → `anchor build` → `anchor deploy` |
 | `already in use` при `create_user_card` | у пользователя уже есть карточка | это ожидаемо, карточка одна на пользователя |
 | `AccountNotInitialized` (`user_card`) при `deposit` | нет карточки | сначала вызови `create_user_card` |
-| `ZeroAmount` | `amount = 0` | вноси сумму больше нуля |
+| `ZeroAmount` | `amount = 0` | вноси / выводи сумму больше нуля |
+| `VaultEmpty` | в vault нет shares | сначала кто-то должен сделать `deposit` |
+| `insufficient funds` при `withdraw` | shares меньше, чем просишь вернуть | проверь баланс share-аккаунта |
 | `SharesTooSmall` | депозит слишком мал относительно vault | увеличь сумму |
 | `429 Too Many Requests` | лимит публичного devnet RPC | подожди или возьми свой RPC |
 
@@ -192,3 +228,5 @@ vault-simple/
 2. Добавить минимальный депозит (например, 1 токен).
 3. Добавить флаг `paused` в `VaultState`: админ может остановить депозиты.
 4. Написать тест: трое пользователей вносят разные суммы, проверить доли по shares.
+5. Добавить инструкцию `withdraw_all`, которая сжигает все shares пользователя за один вызов.
+6. Закрывать карточку (`close`), если у пользователя не осталось shares, и возвращать ренту.

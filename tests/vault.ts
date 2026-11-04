@@ -7,6 +7,8 @@
  *   3. Повторное создание карточки A падает
  *   4. A вносит 100 токенов → 100 shares, B вносит 50 → 50 shares
  *   5. Депозит без карточки и депозит 0 — ошибки
+ *   6. A возвращает 50 shares → получает 50 токенов, B выводит всё
+ *   7. Вывод 0, вывод больше своих shares и вывод без карточки — ошибки
  */
 
 import * as anchor from "@coral-xyz/anchor";
@@ -69,6 +71,31 @@ describe("simple_vault", () => {
       } as any)
       .signers([user])
       .rpc();
+
+  const withdraw = (user: Keypair, sharesAmount: number) =>
+    program.methods
+      .withdraw(new anchor.BN(sharesAmount))
+      .accounts({
+        vaultState: vaultStatePDA,
+        userCard: cardPda(user.publicKey),
+        vaultTokenAccount: vaultTokenAccountPDA,
+        shareMint: shareMintPDA,
+        userTokenAccount: tokenAcc[user.publicKey.toBase58()],
+        userShareAccount: shareAcc[user.publicKey.toBase58()],
+        user: user.publicKey,
+      } as any)
+      .signers([user])
+      .rpc();
+
+  const mustFail = async (fn: () => Promise<string>, msg: string) => {
+    let failed = false;
+    try {
+      await fn();
+    } catch {
+      failed = true;
+    }
+    assert.isTrue(failed, msg);
+  };
 
   const cardPda = (user: PublicKey) =>
     PublicKey.findProgramAddressSync(
@@ -200,5 +227,50 @@ describe("simple_vault", () => {
       failed = true;
     }
     assert.isTrue(failed, "нулевой депозит должен быть отклонён");
+  });
+
+  it("withdraw: A возвращает 50 shares → получает 50 токенов", async () => {
+    const before = (await getAccount(provider.connection, tokenAcc[userA.publicKey.toBase58()])).amount;
+
+    await withdraw(userA, 50 * UNIT);
+
+    const after = (await getAccount(provider.connection, tokenAcc[userA.publicKey.toBase58()])).amount;
+    assert.equal(after - before, BigInt(50 * UNIT));
+
+    const shares = await getAccount(provider.connection, shareAcc[userA.publicKey.toBase58()]);
+    assert.equal(shares.amount, BigInt(50 * UNIT));
+
+    const vault = await program.account.vaultState.fetch(vaultStatePDA);
+    assert.equal(vault.totalTokens.toNumber(), 100 * UNIT);
+    assert.equal(vault.totalShares.toNumber(), 100 * UNIT);
+
+    const card = await program.account.userCard.fetch(cardPda(userA.publicKey));
+    assert.equal(card.deposited.toNumber(), 50 * UNIT);
+    assert.equal(card.shares.toNumber(), 50 * UNIT);
+  });
+
+  it("withdraw: B выводит всё → shares сожжены, токены возвращены", async () => {
+    await withdraw(userB, 50 * UNIT);
+
+    const tokens = await getAccount(provider.connection, tokenAcc[userB.publicKey.toBase58()]);
+    assert.equal(tokens.amount, BigInt(1000 * UNIT)); // отдал 50, получил 50
+    const shares = await getAccount(provider.connection, shareAcc[userB.publicKey.toBase58()]);
+    assert.equal(shares.amount, BigInt(0));
+
+    const vault = await program.account.vaultState.fetch(vaultStatePDA);
+    assert.equal(vault.totalTokens.toNumber(), 50 * UNIT);
+    assert.equal(vault.totalShares.toNumber(), 50 * UNIT);
+  });
+
+  it("withdraw: сумма 0 — ошибка", async () => {
+    await mustFail(() => withdraw(userA, 0), "нулевой вывод должен быть отклонён");
+  });
+
+  it("withdraw: больше своих shares — ошибка", async () => {
+    await mustFail(() => withdraw(userA, 51 * UNIT), "нельзя вывести больше своих shares");
+  });
+
+  it("withdraw: без карточки — ошибка", async () => {
+    await mustFail(() => withdraw(userC, 1 * UNIT), "вывод без карточки должен быть отклонён");
   });
 });
