@@ -1,265 +1,382 @@
+/**
+ * Тесты simple_vault (недели 8-10)
+ *
+ * Сценарий (UNIT = 1 токен, decimals = 6, комиссия 1%):
+ *   - A вносит 100 → комиссия 1, в vault 99, shares 99
+ *   - B вносит 50  → комиссия 0.5, в vault 49.5, shares 49.5
+ *   - A выводит 50 shares → получает 50 токенов
+ *   - B выводит все shares → получает 49.5 токенов
+ */
+
 import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
-import { SimpleVault } from "../target/types/simple_vault";
 import {
   createMint,
-  getOrCreateAssociatedTokenAccount,
+  createAccount,
   mintTo,
   getAccount,
 } from "@solana/spl-token";
-import { assert, expect } from "chai";
+import {
+  Keypair,
+  PublicKey,
+  SystemProgram,
+  Transaction,
+  LAMPORTS_PER_SOL,
+} from "@solana/web3.js";
+import { assert } from "chai";
 
 describe("simple_vault", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
-  const program = anchor.workspace.SimpleVault as Program<SimpleVault>;
+  const program = anchor.workspace.SimpleVault as Program<any>;
+  const admin = (provider.wallet as anchor.Wallet).payer;
 
-  let tokenMint: anchor.web3.PublicKey;
-  let vaultStatePda: anchor.web3.PublicKey;
-  let vaultTokenAccountPda: anchor.web3.PublicKey;
-  let shareMintPda: anchor.web3.PublicKey;
+  const userA = Keypair.generate();
+  const userB = Keypair.generate();
+  const userC = Keypair.generate(); // без карточки
+  const feeWallet = Keypair.generate();
 
-  const admin = provider.wallet;
-  const userA = anchor.web3.Keypair.generate();
-  const userB = anchor.web3.Keypair.generate();
-  const userC = anchor.web3.Keypair.generate();
-  const feeWallet = anchor.web3.Keypair.generate();
+  const UNIT = 1_000_000; // decimals = 6
 
-  let feeTokenAccount: anchor.web3.PublicKey;
-  let userAUserCardPda: anchor.web3.PublicKey;
-  let userBUserCardPda: anchor.web3.PublicKey;
-  let userCUserCardPda: anchor.web3.PublicKey;
+  let tokenMint: PublicKey;
+  let vaultStatePDA: PublicKey;
+  let vaultTokenAccountPDA: PublicKey;
+  let shareMintPDA: PublicKey;
+  let feeTokenAcc: PublicKey;
 
-  let userATokenAccount: anchor.web3.PublicKey;
-  let userBTokenAccount: anchor.web3.PublicKey;
-  let userCTokenAccount: anchor.web3.PublicKey;
+  const tokenAcc: Record<string, PublicKey> = {};
+  const shareAcc: Record<string, PublicKey> = {};
 
-  let userAShareAccount: anchor.web3.PublicKey;
-  let userBShareAccount: anchor.web3.PublicKey;
-  let userCShareAccount: anchor.web3.PublicKey;
+  // ── helpers ────────────────────────────────────────────────────────────────
+
+  const key = (u: Keypair) => u.publicKey.toBase58();
+
+  const fund = async (to: PublicKey, sol = 0.05) => {
+    const tx = new Transaction().add(
+      SystemProgram.transfer({
+        fromPubkey: admin.publicKey,
+        toPubkey: to,
+        lamports: Math.round(sol * LAMPORTS_PER_SOL),
+      })
+    );
+    await provider.sendAndConfirm(tx);
+  };
+
+  const cardPda = (user: PublicKey) =>
+    PublicKey.findProgramAddressSync(
+      [Buffer.from("user_card"), vaultStatePDA.toBuffer(), user.toBuffer()],
+      program.programId
+    )[0];
+
+  const bal = async (acc: PublicKey) =>
+    (await getAccount(provider.connection, acc)).amount;
+
+  const expectFail = async (p: Promise<unknown>, code?: string) => {
+    let err: any = null;
+    try {
+      await p;
+    } catch (e) {
+      err = e;
+    }
+    assert.isNotNull(err, "транзакция должна была упасть");
+    if (code) {
+      const text = `${err?.error?.errorCode?.code ?? ""} ${String(err)}`;
+      assert.include(text, code);
+    }
+  };
+
+  const createCard = (user: Keypair) =>
+    program.methods
+      .createUserCard()
+      .accounts({
+        vaultState: vaultStatePDA,
+        userCard: cardPda(user.publicKey),
+        user: user.publicKey,
+        systemProgram: SystemProgram.programId,
+      } as any)
+      .signers([user])
+      .rpc();
+
+  const closeCard = (user: Keypair) =>
+    program.methods
+      .closeUserCard()
+      .accounts({
+        vaultState: vaultStatePDA,
+        userCard: cardPda(user.publicKey),
+        user: user.publicKey,
+      } as any)
+      .signers([user])
+      .rpc();
+
+  const setPaused = (signer: Keypair, paused: boolean) =>
+    program.methods
+      .setPaused(paused)
+      .accounts({
+        vaultState: vaultStatePDA,
+        admin: signer.publicKey,
+      } as any)
+      .signers([signer])
+      .rpc();
+
+  const deposit = (user: Keypair, amount: number) =>
+    program.methods
+      .deposit(new anchor.BN(amount))
+      .accounts({
+        vaultState: vaultStatePDA,
+        userCard: cardPda(user.publicKey),
+        vaultTokenAccount: vaultTokenAccountPDA,
+        shareMint: shareMintPDA,
+        feeTokenAccount: feeTokenAcc,
+        userTokenAccount: tokenAcc[key(user)],
+        userShareAccount: shareAcc[key(user)],
+        user: user.publicKey,
+      } as any)
+      .signers([user])
+      .rpc();
+
+  const withdraw = (user: Keypair, sharesAmount: number) =>
+    program.methods
+      .withdraw(new anchor.BN(sharesAmount))
+      .accounts({
+        vaultState: vaultStatePDA,
+        userCard: cardPda(user.publicKey),
+        vaultTokenAccount: vaultTokenAccountPDA,
+        shareMint: shareMintPDA,
+        userTokenAccount: tokenAcc[key(user)],
+        userShareAccount: shareAcc[key(user)],
+        user: user.publicKey,
+      } as any)
+      .signers([user])
+      .rpc();
+
+  // ── setup ──────────────────────────────────────────────────────────────────
 
   before(async () => {
-    // 1. Переводим SOL пользователям для оплаты транзакций
-    for (const user of [userA, userB, userC]) {
-      const tx = new anchor.web3.Transaction().add(
-        anchor.web3.SystemProgram.transfer({
-          fromPubkey: admin.publicKey,
-          toPubkey: user.publicKey,
-          lamports: 0.005 * anchor.web3.LAMPORTS_PER_SOL,
-        })
-      );
-      await provider.sendAndConfirm(tx);
+    for (const u of [userA, userB, userC]) {
+      await fund(u.publicKey);
     }
 
-    // 2. Создаем SPL токен
     tokenMint = await createMint(
       provider.connection,
-      (admin as any).payer,
+      admin,
       admin.publicKey,
       null,
       6
     );
 
-    // 3. Находим PDA адреса ваульта
-    [vaultStatePda] = anchor.web3.PublicKey.findProgramAddressSync(
+    [vaultStatePDA] = PublicKey.findProgramAddressSync(
       [Buffer.from("vault"), tokenMint.toBuffer()],
       program.programId
     );
-
-    [vaultTokenAccountPda] = anchor.web3.PublicKey.findProgramAddressSync(
+    [vaultTokenAccountPDA] = PublicKey.findProgramAddressSync(
       [Buffer.from("vault_tokens"), tokenMint.toBuffer()],
       program.programId
     );
-
-    [shareMintPda] = anchor.web3.PublicKey.findProgramAddressSync(
+    [shareMintPDA] = PublicKey.findProgramAddressSync(
       [Buffer.from("share_mint"), tokenMint.toBuffer()],
       program.programId
     );
 
-    // Карточки пользователей
-    [userAUserCardPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("user_card"), vaultStatePda.toBuffer(), userA.publicKey.toBuffer()],
-      program.programId
+    // токен-аккаунт для комиссии
+    feeTokenAcc = await createAccount(
+      provider.connection,
+      admin,
+      tokenMint,
+      feeWallet.publicKey
     );
-
-    [userBUserCardPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("user_card"), vaultStatePda.toBuffer(), userB.publicKey.toBuffer()],
-      program.programId
-    );
-
-    [userCUserCardPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("user_card"), vaultStatePda.toBuffer(), userC.publicKey.toBuffer()],
-      program.programId
-    );
-
-    // Токен-аккаунты
-    const feeATA = await getOrCreateAssociatedTokenAccount(
-      provider.connection, (admin as any).payer, tokenMint, feeWallet.publicKey
-    );
-    feeTokenAccount = feeATA.address;
-
-    const userAATA = await getOrCreateAssociatedTokenAccount(
-      provider.connection, (admin as any).payer, tokenMint, userA.publicKey
-    );
-    userATokenAccount = userAATA.address;
-
-    const userBATA = await getOrCreateAssociatedTokenAccount(
-      provider.connection, (admin as any).payer, tokenMint, userB.publicKey
-    );
-    userBTokenAccount = userBATA.address;
-
-    const userCATA = await getOrCreateAssociatedTokenAccount(
-      provider.connection, (admin as any).payer, tokenMint, userC.publicKey
-    );
-    userCTokenAccount = userCATA.address;
   });
 
-  it("1. initialize_vault: создание ваульта", async () => {
+  // ── week 8 ─────────────────────────────────────────────────────────────────
+
+  it("initialize_vault: vault создан", async () => {
     await program.methods
       .initializeVault(feeWallet.publicKey)
       .accounts({
-        vaultState: vaultStatePda,
-        vaultTokenAccount: vaultTokenAccountPda,
-        shareMint: shareMintPda,
-        tokenMint: tokenMint,
+        vaultState: vaultStatePDA,
+        vaultTokenAccount: vaultTokenAccountPDA,
+        shareMint: shareMintPDA,
+        tokenMint,
         admin: admin.publicKey,
-      })
+        systemProgram: SystemProgram.programId,
+        tokenProgram: anchor.utils.token.TOKEN_PROGRAM_ID,
+      } as any)
       .rpc();
 
-    const vaultState = await program.account.vaultState.fetch(vaultStatePda);
-    assert.equal(vaultState.admin.toBase58(), admin.publicKey.toBase58());
-    assert.equal(vaultState.feeWallet.toBase58(), feeWallet.publicKey.toBase58());
+    const vault = await program.account.vaultState.fetch(vaultStatePDA);
+    assert.equal(vault.admin.toBase58(), admin.publicKey.toBase58());
+    assert.equal(vault.tokenMint.toBase58(), tokenMint.toBase58());
+    assert.equal(vault.shareMint.toBase58(), shareMintPDA.toBase58());
+    assert.equal(vault.feeWallet.toBase58(), feeWallet.publicKey.toBase58());
+    assert.equal(vault.totalTokens.toNumber(), 0);
+    assert.equal(vault.totalShares.toNumber(), 0);
+    assert.isFalse(vault.paused);
 
-    // Создаем share ATA для пользователей
-    userAShareAccount = (await getOrCreateAssociatedTokenAccount(
-      provider.connection, (admin as any).payer, shareMintPda, userA.publicKey
-    )).address;
-
-    userBShareAccount = (await getOrCreateAssociatedTokenAccount(
-      provider.connection, (admin as any).payer, shareMintPda, userB.publicKey
-    )).address;
-
-    userCShareAccount = (await getOrCreateAssociatedTokenAccount(
-      provider.connection, (admin as any).payer, shareMintPda, userC.publicKey
-    )).address;
-
-    // Выдаем базовые токены пользователям
-    await mintTo(provider.connection, (admin as any).payer, tokenMint, userATokenAccount, admin.publicKey, 2000);
-    await mintTo(provider.connection, (admin as any).payer, tokenMint, userBTokenAccount, admin.publicKey, 2000);
-    await mintTo(provider.connection, (admin as any).payer, tokenMint, userCTokenAccount, admin.publicKey, 2000);
+    // теперь share mint существует — создаём аккаунты пользователей
+    for (const user of [userA, userB, userC]) {
+      tokenAcc[key(user)] = await createAccount(
+        provider.connection,
+        admin,
+        tokenMint,
+        user.publicKey
+      );
+      shareAcc[key(user)] = await createAccount(
+        provider.connection,
+        admin,
+        shareMintPDA,
+        user.publicKey
+      );
+      await mintTo(
+        provider.connection,
+        admin,
+        tokenMint,
+        tokenAcc[key(user)],
+        admin,
+        1000 * UNIT
+      );
+    }
   });
 
-  it("2. toggle_pause: проверка паузы админом", async () => {
-    await program.methods
-      .togglePause()
-      .accounts({ vaultState: vaultStatePda, admin: admin.publicKey })
-      .rpc();
+  it("create_user_card: у A и B своя карточка", async () => {
+    await createCard(userA);
+    await createCard(userB);
 
-    let pausedState = await program.account.vaultState.fetch(vaultStatePda);
-    assert.isTrue(pausedState.paused);
-
-    // Снимаем паузу обратно
-    await program.methods
-      .togglePause()
-      .accounts({ vaultState: vaultStatePda, admin: admin.publicKey })
-      .rpc();
-
-    pausedState = await program.account.vaultState.fetch(vaultStatePda);
-    assert.isFalse(pausedState.paused);
-  }, 60000);
-
-  it("3. deposit: трое пользователей вносят разные суммы, проверяем доли по shares", async () => {
-    // Пользователь A создает карточку и вносит 200 токенов (комиссия 2, депозит 198)
-    await program.methods.createUserCard().accounts({
-      vaultState: vaultStatePda, userCard: userAUserCardPda, user: userA.publicKey
-    }).signers([userA]).rpc();
-
-    await program.methods.deposit(new anchor.BN(200)).accounts({
-      vaultState: vaultStatePda,
-      userCard: userAUserCardPda,
-      vaultTokenAccount: vaultTokenAccountPda,
-      shareMint: shareMintPda,
-      userTokenAccount: userATokenAccount,
-      userShareAccount: userAShareAccount,
-      feeTokenAccount: feeTokenAccount,
-      user: userA.publicKey,
-    }).signers([userA]).rpc();
-
-    const cardA = await program.account.userCard.fetch(userAUserCardPda);
-    assert.equal(cardA.shares.toString(), "198");
-
-    // Пользователь B создает карточку и вносит 400 токенов (комиссия 4, депозит 396)
-    await program.methods.createUserCard().accounts({
-      vaultState: vaultStatePda, userCard: userBUserCardPda, user: userB.publicKey
-    }).signers([userB]).rpc();
-
-    await program.methods.deposit(new anchor.BN(400)).accounts({
-      vaultState: vaultStatePda,
-      userCard: userBUserCardPda,
-      vaultTokenAccount: vaultTokenAccountPda,
-      shareMint: shareMintPda,
-      userTokenAccount: userBTokenAccount,
-      userShareAccount: userBShareAccount,
-      feeTokenAccount: feeTokenAccount,
-      user: userB.publicKey,
-    }).signers([userB]).rpc();
-
-    const cardB = await program.account.userCard.fetch(userBUserCardPda);
-    assert.equal(cardB.shares.toString(), "396");
-
-    // Пользователь C создает карточку и вносит 1000 токенов (комиссия 10, депозит 990)
-    await program.methods.createUserCard().accounts({
-      vaultState: vaultStatePda, userCard: userCUserCardPda, user: userC.publicKey
-    }).signers([userC]).rpc();
-
-    await program.methods.deposit(new anchor.BN(1000)).accounts({
-      vaultState: vaultStatePda,
-      userCard: userCUserCardPda,
-      vaultTokenAccount: vaultTokenAccountPda,
-      shareMint: shareMintPda,
-      userTokenAccount: userCTokenAccount,
-      userShareAccount: userCShareAccount,
-      feeTokenAccount: feeTokenAccount,
-      user: userC.publicKey,
-    }).signers([userC]).rpc();
-
-    const cardC = await program.account.userCard.fetch(userCUserCardPda);
-    assert.equal(cardC.shares.toString(), "990");
-
-    // Проверяем общие начисления ваульта
-    const vault = await program.account.vaultState.fetch(vaultStatePda);
-    assert.equal(vault.totalTokens.toString(), "1584"); // 198 + 396 + 990
-    assert.equal(vault.totalShares.toString(), "1584");
+    const card = await program.account.userCard.fetch(cardPda(userA.publicKey));
+    assert.equal(card.owner.toBase58(), userA.publicKey.toBase58());
+    assert.equal(card.vault.toBase58(), vaultStatePDA.toBase58());
+    assert.equal(card.deposited.toNumber(), 0);
+    assert.equal(card.shares.toNumber(), 0);
+    assert.isAbove(card.createdAt.toNumber(), 0);
   });
 
-  it("4. close_user_card: закрытие карточки с нулевым балансом", async () => {
-    // Создаем временную карточку и сразу закрываем её
-    const tempUser = anchor.web3.Keypair.generate();
-    
-    const tx = new anchor.web3.Transaction().add(
-      anchor.web3.SystemProgram.transfer({
-        fromPubkey: admin.publicKey,
-        toPubkey: tempUser.publicKey,
-        lamports: 0.005 * anchor.web3.LAMPORTS_PER_SOL,
-      })
-    );
-    await provider.sendAndConfirm(tx);
+  it("create_user_card: вторая карточка для того же пользователя — ошибка", async () => {
+    await expectFail(createCard(userA));
+  });
 
-    const [tempCardPda] = anchor.web3.PublicKey.findProgramAddressSync(
-      [Buffer.from("user_card"), vaultStatePda.toBuffer(), tempUser.publicKey.toBuffer()],
-      program.programId
-    );
+  // ── week 9: deposit ────────────────────────────────────────────────────────
 
-    await program.methods.createUserCard().accounts({
-      vaultState: vaultStatePda, userCard: tempCardPda, user: tempUser.publicKey
-    }).signers([tempUser]).rpc();
+  it("deposit: A вносит 100 → 1 комиссия, 99 в vault, 99 shares", async () => {
+    await deposit(userA, 100 * UNIT);
 
-    await program.methods.closeUserCard().accounts({
-      userCard: tempCardPda, owner: tempUser.publicKey
-    }).signers([tempUser]).rpc();
+    assert.equal(await bal(shareAcc[key(userA)]), BigInt(99 * UNIT));
+    assert.equal(await bal(feeTokenAcc), BigInt(1 * UNIT));
+    assert.equal(await bal(vaultTokenAccountPDA), BigInt(99 * UNIT));
+    assert.equal(await bal(tokenAcc[key(userA)]), BigInt(900 * UNIT));
 
-    const closedInfo = await provider.connection.getAccountInfo(tempCardPda);
-    assert.isNull(closedInfo);
+    const card = await program.account.userCard.fetch(cardPda(userA.publicKey));
+    assert.equal(card.deposited.toNumber(), 99 * UNIT);
+    assert.equal(card.shares.toNumber(), 99 * UNIT);
+  });
+
+  it("deposit: B вносит 50 → 0.5 комиссия, 49.5 в vault, 49.5 shares", async () => {
+    await deposit(userB, 50 * UNIT);
+
+    assert.equal(await bal(shareAcc[key(userB)]), BigInt(49_500_000));
+    assert.equal(await bal(feeTokenAcc), BigInt(1_500_000));
+
+    const vault = await program.account.vaultState.fetch(vaultStatePDA);
+    assert.equal(vault.totalTokens.toNumber(), 148_500_000);
+    assert.equal(vault.totalShares.toNumber(), 148_500_000);
+    assert.equal(await bal(vaultTokenAccountPDA), BigInt(148_500_000));
+  });
+
+  it("deposit: без карточки — ошибка", async () => {
+    await expectFail(deposit(userC, 10 * UNIT), "AccountNotInitialized");
+  });
+
+  it("deposit: сумма 0 — ошибка", async () => {
+    await expectFail(deposit(userA, 0), "ZeroAmount");
+  });
+
+  it("deposit: меньше минимума — ошибка", async () => {
+    await expectFail(deposit(userA, 50), "DepositTooSmall");
+  });
+
+  it("paused: депозит и создание карточки блокируются, не-админ не может ставить паузу", async () => {
+    await expectFail(setPaused(userA, true), "NotAdmin");
+
+    await setPaused(admin, true);
+    try {
+      await expectFail(deposit(userA, 10 * UNIT), "VaultPaused");
+      await expectFail(createCard(userC), "VaultPaused");
+    } finally {
+      await setPaused(admin, false);
+    }
+
+    const vault = await program.account.vaultState.fetch(vaultStatePDA);
+    assert.isFalse(vault.paused);
+  });
+
+  // ── week 10: withdraw ──────────────────────────────────────────────────────
+
+  it("withdraw: A возвращает 50 shares → получает 50 токенов", async () => {
+    const before = await bal(tokenAcc[key(userA)]);
+
+    await withdraw(userA, 50 * UNIT);
+
+    const after = await bal(tokenAcc[key(userA)]);
+    assert.equal(after - before, BigInt(50 * UNIT));
+    assert.equal(await bal(shareAcc[key(userA)]), BigInt(49 * UNIT));
+
+    const vault = await program.account.vaultState.fetch(vaultStatePDA);
+    assert.equal(vault.totalTokens.toNumber(), 98_500_000);
+    assert.equal(vault.totalShares.toNumber(), 98_500_000);
+
+    const card = await program.account.userCard.fetch(cardPda(userA.publicKey));
+    assert.equal(card.deposited.toNumber(), 49 * UNIT);
+    assert.equal(card.shares.toNumber(), 49 * UNIT);
+  });
+
+  it("withdraw: B выводит всё → shares сожжены, токены возвращены", async () => {
+    await withdraw(userB, 49_500_000);
+
+    assert.equal(await bal(shareAcc[key(userB)]), BigInt(0));
+    // 1000 - 50 (депозит) + 49.5 (вывод); комиссия 0.5 не возвращается
+    assert.equal(await bal(tokenAcc[key(userB)]), BigInt(999_500_000));
+
+    const card = await program.account.userCard.fetch(cardPda(userB.publicKey));
+    assert.equal(card.deposited.toNumber(), 0);
+    assert.equal(card.shares.toNumber(), 0);
+
+    const vault = await program.account.vaultState.fetch(vaultStatePDA);
+    assert.equal(vault.totalTokens.toNumber(), 49 * UNIT);
+    assert.equal(vault.totalShares.toNumber(), 49 * UNIT);
+  });
+
+  it("withdraw: сумма 0 — ошибка", async () => {
+    await expectFail(withdraw(userA, 0), "ZeroAmount");
+  });
+
+  it("withdraw: больше своих shares — ошибка", async () => {
+    // у A осталось 49
+    await expectFail(withdraw(userA, 60 * UNIT));
+  });
+
+  it("withdraw: без карточки — ошибка", async () => {
+    await expectFail(withdraw(userC, 10 * UNIT), "AccountNotInitialized");
+  });
+
+  it("withdraw: работает даже на паузе", async () => {
+    await setPaused(admin, true);
+    try {
+      const before = await bal(tokenAcc[key(userA)]);
+      await withdraw(userA, 9 * UNIT);
+      const after = await bal(tokenAcc[key(userA)]);
+      assert.equal(after - before, BigInt(9 * UNIT));
+    } finally {
+      await setPaused(admin, false);
+    }
+  });
+
+  // ── close_user_card ────────────────────────────────────────────────────────
+
+  it("close_user_card: с shares — ошибка", async () => {
+    await expectFail(closeCard(userA), "CardHasShares");
+  });
+
+  it("close_user_card: без shares — карточка закрыта", async () => {
+    await closeCard(userB);
+    const info = await provider.connection.getAccountInfo(cardPda(userB.publicKey));
+    assert.isNull(info);
   });
 });
