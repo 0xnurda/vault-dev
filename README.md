@@ -1,13 +1,15 @@
 # Simple Vault — практика Anchor
 
-Учебный контракт на Anchor 0.31.1 (Solana). Сейчас он делает четыре вещи:
+Учебный контракт на Anchor 0.31.1 (Solana). Сейчас он делает четыре вещи, а на неделе 11 к нему добавляется скрипт для Raydium:
 
 1. **Vault создан** — админ создаёт vault для SPL-токена. *(неделя 8)*
 2. **У каждого пользователя своя «карточка»** — личный аккаунт (PDA) внутри vault. *(неделя 8)*
 3. **Депозит и share-токены** — пользователь вносит токены и получает share-токены. *(неделя 9)*
 4. **CPI и вывод** — пользователь возвращает share-токены и забирает свои токены. *(неделя 10)*
 
-Контракт будет дорабатываться (Raydium и т.д.), поэтому он намеренно небольшой.
+5. **Свои токены и свой CLMM-пул на Raydium (devnet)** — скрипт `create-pool`, сам контракт на этой неделе не меняется. *(неделя 11)*
+
+Контракт будет дорабатываться (swap и позиции через Raydium), поэтому он намеренно небольшой.
 
 ---
 
@@ -101,6 +103,57 @@ Seeds: `["user_card", vault_state, user]` — поэтому у одного п�
 
 ---
 
+## Неделя 11 — свои токены и свой CLMM-пул на Raydium
+
+### Идея простыми словами
+
+- **AMM** (automated market maker) — пул, в котором два токена лежат вместе, а цена считается по формуле. Обмен идёт прямо с пулом, без биржевого стакана.
+- **Концентрированная ликвидность (CLMM)** — поставщик ликвидности не раскидывает деньги по всем ценам от 0 до бесконечности, а выбирает **ценовой диапазон**. Деньги работают только пока цена внутри диапазона, зато комиссий в нём зарабатывается больше.
+- На этой неделе мы только **создаём** пул: два наших токена и пул Raydium CLMM на devnet. Позиции и swap будут на следующих неделях.
+
+### Что делает скрипт
+
+`scripts/create-clmm-pool.ts`:
+
+1. Создаёт два тестовых SPL-токена (`TOKEN_A`, `TOKEN_B`, по 6 decimals) и минтит по 1 000 000 каждого на твой кошелёк.
+2. Берёт из API Raydium (devnet) конфиг комиссий (шаг тика 60, комиссия 0.25%).
+3. Создаёт пул `TOKEN_A / TOKEN_B` в программе Raydium CLMM со стартовой ценой 1 (1 `TOKEN_A` = 1 `TOKEN_B`).
+4. Сохраняет адреса в `devnet-pool.json` (файл в `.gitignore`: у каждого студента свои токены и пул).
+
+### Запуск
+
+Нужен баланс на devnet (хватит ~1 SOL) и настроенный `solana config set --url devnet` (шаги 3–4 из «Быстрого старта»).
+
+```bash
+yarn install
+yarn create-pool
+```
+
+Ожидаемый вывод (адреса у тебя будут свои):
+
+```
+[1/3] Создаю тестовые токены...
+  TOKEN_A: <mint>
+  TOKEN_B: <mint>
+[2/3] Создаю CLMM-пул на Raydium devnet...
+  Pool: <адрес пула>
+  Tx  : https://explorer.solana.com/tx/...?cluster=devnet
+[3/3] Сохраняю devnet-pool.json
+```
+
+Открой ссылку на пул в Solana Explorer (cluster = devnet): владелец аккаунта должен быть
+`DRayAUgENGQBKVaX8owNhgzkEDyoHTGVEGHVJT1E9pfH` — это программа Raydium CLMM на devnet.
+
+Пара полезных переменных окружения: `ANCHOR_WALLET` (другой кошелёк) и `DEVNET_RPC` (свой RPC, если публичный отвечает `429`).
+
+### Что сдавать
+
+Ссылку на коммит со скриптом и адрес своего пула (`poolId` из `devnet-pool.json`) со ссылкой на Explorer.
+
+> Токены здесь без метаданных (имени и иконки): для учебного пула это не нужно, в Explorer они видны просто адресами.
+
+---
+
 ## Требования
 
 | Инструмент | Версия | Установка |
@@ -112,7 +165,7 @@ Seeds: `["user_card", vault_state, user]` — поэтому у одного п�
 | Yarn | any | `npm i -g yarn` |
 
 Rust-зависимости (`anchor-lang`, `anchor-spl` 0.31.1) подтянутся сами при `anchor build`.
-JS-зависимости (`@coral-xyz/anchor`, `@solana/web3.js`, `@solana/spl-token`, `mocha`, `chai`, `typescript`) — через `yarn install`.
+JS-зависимости (`@coral-xyz/anchor`, `@solana/web3.js`, `@solana/spl-token`, `@raydium-io/raydium-sdk-v2`, `decimal.js`, `ts-node`, `mocha`, `chai`, `typescript`) — через `yarn install`.
 
 ---
 
@@ -198,6 +251,7 @@ yarn test
 ```
 vault-simple/
 ├── programs/simple_vault/src/lib.rs   # контракт
+├── scripts/create-clmm-pool.ts        # неделя 11: токены и CLMM-пул на Raydium
 ├── tests/vault.ts                     # тесты
 ├── Anchor.toml
 ├── Cargo.toml
@@ -218,7 +272,8 @@ vault-simple/
 | `VaultEmpty` | в vault нет shares | сначала кто-то должен сделать `deposit` |
 | `insufficient funds` при `withdraw` | shares меньше, чем просишь вернуть | проверь баланс share-аккаунта |
 | `SharesTooSmall` | депозит слишком мал относительно vault | увеличь сумму |
-| `429 Too Many Requests` | лимит публичного devnet RPC | подожди или возьми свой RPC |
+| `429 Too Many Requests` | лимит публичного devnet RPC | подожди или возьми свой RPC (`DEVNET_RPC`) |
+| `yarn create-pool` падает на `Insufficient funds` | мало SOL на devnet | пополни кошелёк (faucet.solana.com) |
 
 ---
 

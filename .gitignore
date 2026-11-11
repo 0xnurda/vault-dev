@@ -22,3 +22,6 @@ devnet-wallet.json
 .DS_Store
 .vscode/
 .idea/
+
+# Адреса, созданные скриптом create-pool (у каждого студента свои)
+devnet-pool.json
