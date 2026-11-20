@@ -15,6 +15,7 @@ import * as anchor from "@coral-xyz/anchor";
 import { Program } from "@coral-xyz/anchor";
 import { createMint, createAccount, mintTo, getAccount } from "@solana/spl-token";
 import {
+  Connection,
   Keypair,
   PublicKey,
   LAMPORTS_PER_SOL,
@@ -38,7 +39,13 @@ async function fundFromAdmin(
 }
 
 describe("simple_vault", () => {
-  const provider = anchor.AnchorProvider.env();
+  // commitment "confirmed", как в tests/raydium.ts: оба файла делят одну программу из anchor.workspace,
+  // и с "processed" созданный здесь токен может быть ещё не виден ноде, через которую идёт вызов программы
+  const env = anchor.AnchorProvider.env();
+  const provider = new anchor.AnchorProvider(new Connection(env.connection.rpcEndpoint, "confirmed"), env.wallet, {
+    commitment: "confirmed",
+    preflightCommitment: "confirmed",
+  });
   anchor.setProvider(provider);
 
   const program = anchor.workspace.SimpleVault as Program<SimpleVault>;
