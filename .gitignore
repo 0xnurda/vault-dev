@@ -7,7 +7,9 @@ yarn-error.log
 
 # Anchor
 .anchor/
-app/
+app/dist/
+# Локальные настройки сайта (свой RPC с ключом и т.п.)
+app/.env*.local
 # Скомпилированный бинарник (большой, генерируется через anchor build)
 target/deploy/*.so
 

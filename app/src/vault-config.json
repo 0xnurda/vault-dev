@@ -1,0 +1,7 @@
+{
+  "rpcUrl": "https://api.devnet.solana.com",
+  "programId": "EbojNUfh9Jk6dyZaaQAJWofbdnkvdxfQbeAPq6iWoHAu",
+  "tokenMint": "HPQhcuZG2dVbkDXraoE8mnNQZmuir42fDQ7Jc3ooDppi",
+  "tokenSymbol": "TOKEN_A",
+  "admin": "38afxYQhjGKgyoWEsKhAZ85xkdCj3z6bj3YU5RY74mR1"
+}

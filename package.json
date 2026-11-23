@@ -5,7 +5,10 @@
     "build": "anchor build",
     "test": "anchor test --provider.cluster devnet --skip-local-validator --skip-deploy",
     "deploy": "anchor deploy --provider.cluster devnet",
-    "create-pool": "ts-node scripts/create-clmm-pool.ts"
+    "create-pool": "ts-node scripts/create-clmm-pool.ts",
+    "setup-demo": "ts-node scripts/setup-demo-vault.ts",
+    "faucet": "ts-node scripts/faucet.ts",
+    "sync-idl": "cp target/idl/simple_vault.json target/types/simple_vault.ts app/src/idl/"
   },
   "dependencies": {
     "@coral-xyz/anchor": "^0.31.1",
